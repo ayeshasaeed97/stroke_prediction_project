@@ -1,0 +1,154 @@
+---
+title: "BS806 Final Project"
+author: "Ayesha Saeed"
+date: "2025-12-12"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+db <- read.csv('/Users/ayeshasaeed/Documents/MSAB/BS 806 Stat. Learning w:Appl. in R/final project/archive/diabetes_binary_health_indicators_BRFSS2015.csv')
+
+library(tree)
+library(tidyverse)
+library(rpart)
+library(pROC)
+library(caret)
+library(rpart.plot)
+```
+
+
+### EDA
+```{r}
+db %>%
+  count(Stroke) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  ggplot(aes(x = factor(Stroke), y = n)) +
+  geom_col(fill = "#5DA5DA", color = "white", width = 0.7) +
+  geom_text(aes(label = paste0(pct, "%")),
+            vjust = -0.5, size = 5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Distribution of Stroke",
+    x = "Stroke Status",
+    y = "Count"
+  ) +
+  theme_light(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    panel.border = element_blank()
+  )
+
+library(correlation)
+
+mixed_cor <- correlation(db, method = "auto")
+summary(mixed_cor)
+
+cor_mat <- as.matrix(mixed_cor)
+
+library(corrplot)
+corrplot(cor_mat,
+         method = "color",
+         type = "upper",
+         tl.col = "black",
+         col = colorRampPalette(c("purple", "white", "blue"))(200),
+         tl.srt = 45,     # rotate labels
+         tl.cex = 0.5)
+```
+
+
+
+```{r}
+binary_candidates <- c("Diabetes_binary", "HighBP", "HighChol", "CholCheck",
+                       "Smoker", "Stroke", "HeartDiseaseorAttack",
+                       "PhysActivity", "Fruits", "Veggies", "HvyAlcoholConsump",
+                       "AnyHealthcare", "NoDocbcCost", "DiffWalk", "Sex")
+
+
+for (col in binary_candidates) {
+  if (length(unique(db[[col]])) == 2 && !is.factor(db[[col]])) {
+    db[[col]] <- as.factor(db[[col]])
+  }
+}
+
+# train test split
+set.seed(28)
+idx  <- sample(seq_len(nrow(db)), size = 0.7 * nrow(db))
+train <- db[idx, ]
+test  <- db[-idx, ]
+
+
+train$Stroke <- factor(train$Stroke, levels = c(0,1))
+test$Stroke  <- factor(test$Stroke,  levels = c(0,1))
+
+cases    <- subset(train, Stroke == 1)
+controls <- subset(train, Stroke == 0)
+```
+
+### classification tree without resampling
+```{r}
+tree1 <- tree(Stroke ~ ., data = db)
+set.seed(123)
+cv.results <- cv.tree(tree1, FUN = prune.misclass)
+
+print(cv.results)
+best_size <- cv.results$size[which.min(cv.results$dev)]
+
+tree_best <- prune.tree(tree1, best = best_size, method = "misclass")
+summary(tree_best)
+plot(tree_best)
+text(tree_best, pretty = 0, cex = 1.5)
+
+prob <- predict(tree_best, type = "vector")[, "1"]
+roc_obj <- roc(db$Stroke, prob)
+plot(roc_obj, col = "#1E90FF", lwd = 3, main = "ROC Curve for Classification Tree")
+auc(roc_obj)
+```
+
+
+
+### Classification tree with resampling
+```{r}
+## resampling
+n_cases    <- nrow(cases)
+n_controls <- 2 * n_cases   # 1:2 case:control ratio
+
+set.seed(28)
+sampled_cases    <- cases[sample(n_cases, n_cases, replace = TRUE), ]
+sampled_controls <- controls[sample(nrow(controls), n_controls, replace = TRUE), ]
+
+balanced_train <- rbind(sampled_cases, sampled_controls)
+balanced_train$Stroke <- factor(balanced_train$Stroke, levels = c(0,1))
+
+# fitting regression tree
+fit <- rpart(
+  Stroke ~ .,
+  data   = balanced_train,
+  method = "class"
+)
+
+
+rpart.plot(
+  fit,
+  type = 4,
+  extra = 106,    
+  faclen = 0,          
+  box.palette = "OrRd",
+  under = TRUE,
+  fallen.leaves = TRUE,
+  shadow.col = "#cccccc",
+  split.cex = 1,
+  cex = 0.8
+)
+
+# calculating AUC
+predicted <- predict(fit, newdata = test, type="class")
+
+confusionMatrix(predicted, test$Stroke, positive = "1")
+
+probs <- predict(fit, newdata = test, type = "prob")[, "1"]
+roc(test$Stroke, probs, levels = c("0", "1"), direction = "<")
+plot(roc(test$Stroke, probs, levels = c("0", "1"), direction = "<"))
+
+```
+
